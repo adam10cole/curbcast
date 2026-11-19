@@ -87,14 +87,15 @@ def get_json(session: requests.Session, url: str, params: dict | None = None) ->
 
 def find_layer_id(session: requests.Session, service_url: str, ref: MonthRef) -> int:
     # Seems to always be month - 1, but any given year could change format
-    layers = get_json(session, service_url).get("layers", [])
+    body = get_json(session, service_url)
+    candidates = [*body.get("layers", []), *body.get("tables", [])]
 
     month = calendar.month_name[ref.month].lower()
     year = str(ref.year)
 
     matches = [
         layer
-        for layer in layers
+        for layer in candidates
         if month in _normalize(layer["name"]) and year in _normalize(layer["name"])
     ]
 
