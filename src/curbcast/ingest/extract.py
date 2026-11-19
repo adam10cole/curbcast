@@ -101,7 +101,7 @@ def find_layer_id(session: requests.Session, service_url: str, ref: MonthRef) ->
 
     if not matches:
         raise MonthNotPublishedError(
-            f"No layer for {ref} in {service_url} {[layer['name'] for layer in layers]}"
+            f"No layer for {ref} in {service_url} {[layer['name'] for layer in candidates]}"
         )
     if len(matches) > 1:
         raise AmbiguousLayerError(
