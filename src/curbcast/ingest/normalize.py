@@ -1,6 +1,6 @@
 import math
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time
 from decimal import Decimal, InvalidOperation
@@ -28,9 +28,9 @@ class Violation:
     issued_local_hour: int
     issued_local_weekday: int
     violation_code: str
-    violation_desc: str
+    violation_desc: str | None
     agency_code: str
-    fine_amount: Decimal
+    fine_amount: Decimal | None
     latitude: float | None
     longitude: float | None
     is_geocoded: bool
@@ -58,14 +58,14 @@ def parse_issue_date(value: object) -> date:
         raise FieldError("ISSUE_DATE", f"not valid timestamp: {value!r}") from exc
 
     issued = moment.astimezone(DC_TIMEZONE).date()
-    if not 200 <= issued.year <= datetime.now(UTC).year + 1:
+    if not 2000 <= issued.year <= datetime.now(UTC).year + 1:
         raise FieldError("ISSUE_DATE", f"not a possible year {issued.year}: {value!r}")
 
     return issued
 
 
 def parse_issue_time(value: object) -> time:
-    text = str(_require(value, "TICKET_NUMBER", str, int)).strip()
+    text = str(_require(value, "ISSUE_TIME", str, int)).strip()
 
     if match := TIME_12H.match(text):
         hour, minute = int(match[1]), int(match[2])
@@ -85,7 +85,7 @@ def parse_issue_time(value: object) -> time:
 
 def parse_text(value: object, field: str) -> str:
     text = str(_require(value, field, str, int))
-    return "".join(text.split())
+    return " ".join(text.split())
 
 
 def parse_fine(value: object) -> Decimal:
@@ -125,9 +125,11 @@ def normalize_record(attrs: Mapping[str, Any], source_month: str) -> Violation |
             tzinfo=DC_TIMEZONE,
         )
         violation_code = parse_text(attrs.get("VIOLATION_CODE"), "VIOLATION_CODE").upper()
-        violation_desc = parse_text(attrs.get("VIOLATION_PROC_DESC"), "VIOLATION_PROC_DESC")
+        violation_desc = _optional(
+            attrs.get("VIOLATION_PROC_DESC"), lambda v: parse_text(v, "VIOLATION_PROC_DESC")
+        )
         agency_code = parse_text(attrs.get("ISSUING_AGENCY_CODE"), "ISSUING_AGENCY_CODE")
-        fine_amount = parse_fine(attrs.get("FINE_AMOUNT"))
+        fine_amount = _optional(attrs.get("FINE_AMOUNT"), parse_fine)
         latitude, longitude, is_geocoded = parse_coords(
             attrs.get("LATITUDE"), attrs.get("LONGITUDE")
         )
@@ -180,3 +182,11 @@ def _as_coordinate(value: object) -> float | None:
     if not math.isfinite(number) or number == 0:
         return None
     return number
+
+
+def _is_missing(value: object) -> bool:
+    return value is None or (isinstance(value, str) and not value.strip())
+
+
+def _optional[T](value: object, parse: Callable[[object], T]) -> T | None:
+    return None if _is_missing(value) else parse(value)
