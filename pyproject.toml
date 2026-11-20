@@ -39,3 +39,6 @@ dev = [
 [[tool.mypy.overrides]]
 module = ["pyarrow", "pyarrow.*"]
 ignore_missing_imports = true
+
+[project.scripts]
+curbcast = "curbcast.ingest.cli:main"
