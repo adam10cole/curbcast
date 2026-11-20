@@ -39,6 +39,13 @@ class MonthRef:
     def __str__(self) -> str:
         return f"{self.year}-{self.month:02d}"
 
+@dataclass(frozen=True)
+class ExtractResult:
+    month: str
+    expected: int
+    fetched: int
+    pages: int
+    out_dir: Path
 
 log = logging.getLogger(__name__)
 TIMEOUT = (5, 30)  # connect, read (in seconds)
@@ -173,7 +180,7 @@ def extract_month(
     base_url: str,
     ref: MonthRef,
     data_dir: Path,
-) -> Path:
+) -> ExtractResult:
     service_url = service_url_for(base_url, ref.year)
     layer_id = find_layer_id(session, service_url, ref)
     layer_url = f"{service_url}/{layer_id}"
@@ -224,7 +231,13 @@ def extract_month(
     work_dir.rename(final_dir)
 
     log.info("Extracted %s: %d rows in %d pages", ref, fetched, len(pages))
-    return final_dir
+    return ExtractResult(
+        str(ref),
+        expected,
+        fetched, 
+        len(pages),
+        final_dir
+    )
 
 
 ### Helpers

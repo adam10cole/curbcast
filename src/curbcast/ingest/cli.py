@@ -3,7 +3,8 @@ import logging
 import os
 import sys
 import time
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -11,6 +12,7 @@ import psycopg
 
 from curbcast.ingest.extract import (
     ExtractError,
+    ExtractResult,
     MonthNotPublishedError,
     MonthRef,
     build_session,
@@ -83,15 +85,15 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "normalize":
             do_normalize(settings, args.month)
         elif args.command == "load":
-            with psycopg.connect(settings.require_database_url()) as conn:
+            with psycopg.connect(settings.require_database_url(), autocommit=True) as conn:
                 do_load(conn, settings, args.month)
         elif args.command == "run":
             settings.require_database_url()
-            with psycopg.connect(settings.require_database_url()) as conn:
+            with psycopg.connect(settings.require_database_url(), autocommit=True) as conn:
                 do_run(conn, settings, args.month)
         elif args.command == "backfill":
             settings.require_database_url()
-            with psycopg.connect(settings.require_database_url()) as conn:
+            with psycopg.connect(settings.require_database_url(), autocommit=True) as conn:
                 do_backfill(conn, settings, args.month, args.month)
     except (ExtractError, NormalizeError, LoadError) as exc:
         log.error("%s", exc)
@@ -100,7 +102,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 # Helpers
-def do_extract(settings: Settings, month: MonthRef) -> Path:
+def do_extract(settings: Settings, month: MonthRef) -> ExtractResult:
     return extract_month(build_session(), settings.arcgis_base_url, month, settings.data_dir)
 
 
@@ -112,10 +114,60 @@ def do_load(conn: psycopg.Connection, settings: Settings, month: MonthRef) -> Lo
     return load_month(conn, clean_dir(settings, month))
 
 
+@dataclass
+class StageCounts:
+    expected: int | None = None
+    clean: int | None = None
+    rejected: int | None = None
+
+
+@contextmanager
+def track(conn: psycopg.Connection, month: MonthRef, stage: str) -> Generator[StageCounts]:
+    row = conn.execute(
+        "INSERT INTO ingestion_runs (source_month, stage, status) "
+        "VALUES (%s, %s, 'running') RETURNING id",
+        (str(month), stage),
+    ).fetchone()
+    assert row is not None
+    run_id = row[0]
+    counts = StageCounts()
+    try:
+        yield counts
+    except Exception as exc:
+        conn.execute(
+            "UPDATE ingestion_runs SET status = 'failed', finished_at = now(), error = %s"
+            "WHERE id = %s",
+            (str(exc), run_id),
+        )
+        raise
+    conn.execute(
+        "UPDATE ingestion_runs SET status = 'succeeded', finished_at = now(), "
+        "rows_expected = %s, rows_clean = %s, rows_rejected = %s WHERE id = %s",
+        (counts.expected, counts.clean, counts.rejected, run_id),
+    )
+
+
+# Working meanings for the injection table (TODO: move to README when it's written)
+# Stage      | rows_expected    | rows_clean        | rows_rejected
+# extract    | server count     | rows fetched      | null
+# normalize  | rows in raw files| clean rows        | rejected rows
+# load       | rows in parquet  | violations loaded | rejects loaded
 def do_run(conn: psycopg.Connection, settings: Settings, month: MonthRef) -> None:
-    do_extract(settings, month)
-    do_normalize(settings, month)
-    do_load(conn, settings, month)
+    # cur.execute("DELETE FROM violations WHERE source_month = %s", (month,))
+    with track(conn, month, "extract") as counts:
+        extracted = do_extract(settings, month)
+        counts.expected, counts.clean = extracted.expected, extracted.fetched
+
+    with track(conn, month, "normalize") as counts:
+        normalized = do_normalize(settings, month)
+        counts.expected, counts.clean, counts.rejected = (
+            normalized.total, normalized.clean, normalized.rejected
+        )
+
+    with track(conn, month, "load") as counts:
+        loaded = do_load(conn, settings, month)
+        counts.expected = loaded.violations + loaded.rejects
+        counts.clean, counts.rejected = loaded.violations, loaded.rejects
 
 
 def do_backfill(conn: psycopg.Connection, settings: Settings, 
