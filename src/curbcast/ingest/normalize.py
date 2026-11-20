@@ -1,25 +1,25 @@
-from collections.abc import Mapping
-from dataclasses import dataclass, field
-import datetime
-from decimal import Decimal, InvalidOperation
 import math
-from pathlib import Path
+import re
+from collections.abc import Mapping
+from dataclasses import dataclass
+from datetime import UTC, date, datetime, time
+from decimal import Decimal, InvalidOperation
 from typing import Any
 from zoneinfo import ZoneInfo
-from datetime import UTC, date, datetime, time
-import re
 
 TIME_12H = re.compile(r"^(\d{1,2}):(\d{2})\s?([AP]M)$", re.IGNORECASE)
 TIME_HHMM = re.compile(r"^\d{1,4}$")
 
 DC_TIMEZONE = ZoneInfo("America/New Yokr")
-DC_BOUNDARIES = (-77.12, 38.79, -76.91, 39.00)      # (min long, lat, max long, lat)
+DC_BOUNDARIES = (-77.12, 38.79, -76.91, 39.00)  # (min long, lat, max long, lat)
+
 
 class FieldError(Exception):
     def __init__(self, field: str, reason: str) -> None:
         super().__init__(f"{field}: {reason}")
         self.field = field
         self.reason = reason
+
 
 @dataclass(frozen=True)
 class Violation:
@@ -37,18 +37,22 @@ class Violation:
     source_month: str
     source_objectid: int
 
+
 @dataclass(frozen=True)
-class Reject: 
+class Reject:
     source_objectid: int | None
+    field: str
     reason: str
-    raw: dict
+    raw: dict[str, Any]
+
 
 def parse_ticket_number(value: object) -> str:
     return str(_require(value, "TICKET_NUMBER", str, int)).strip()
 
+
 def parse_issue_date(value: object) -> date:
     millis = _require(value, "ISSUE_DATE", int)
-    try: 
+    try:
         moment = datetime.fromtimestamp(millis / 1000, tz=UTC)
     except (OverflowError, OSError, ValueError) as exc:
         raise FieldError("ISSUE_DATE", f"not valid timestamp: {value!r}") from exc
@@ -59,7 +63,8 @@ def parse_issue_date(value: object) -> date:
 
     return issued
 
-def parse_issue_time(value: object) -> time: 
+
+def parse_issue_time(value: object) -> time:
     text = str(_require(value, "TICKET_NUMBER", str, int)).strip()
 
     if match := TIME_12H.match(text):
@@ -77,9 +82,12 @@ def parse_issue_time(value: object) -> time:
 
     return time(hour, minute)
 
+
 def parse_text(value: object, field: str) -> str:
     text = str(_require(value, field, str, int))
     return "".join(text.split())
+
+
 def parse_fine(value: object) -> Decimal:
     amount = _require(value, "FINE_AMOUNT", int, float)
 
@@ -95,6 +103,7 @@ def parse_fine(value: object) -> Decimal:
 
     return fine.quantize(Decimal("0.01"))
 
+
 def parse_coords(lat: object, lon: object) -> tuple[float | None, float | None, bool]:
     latitude, longitude = _as_coordinate(lat), _as_coordinate(lon)
     if latitude is None or longitude is None:
@@ -105,6 +114,7 @@ def parse_coords(lat: object, lon: object) -> tuple[float | None, float | None, 
         return None, None, False
 
     return latitude, longitude, True
+
 
 def normalize_record(attrs: Mapping[str, Any], source_month: str) -> Violation | Reject:
     try:
@@ -145,7 +155,9 @@ def normalize_record(attrs: Mapping[str, Any], source_month: str) -> Violation |
         source_objectid=attrs["OBJECTID"],
     )
 
-#def normalize_month(raw_dir: Path, clean_dir: Path) -> NormalizeResult: 
+
+# def normalize_month(raw_dir: Path, clean_dir: Path) -> NormalizeResult:
+
 
 # Helpers
 def _require[T](value: object, field: str, *allowed: type[T]) -> T:
@@ -159,6 +171,7 @@ def _require[T](value: object, field: str, *allowed: type[T]) -> T:
         expected = " or ".join(t.__name__ for t in allowed)
         raise FieldError(field, f"expected {expected} but got {type(value).__name__}: {value!r}")
     return value
+
 
 def _as_coordinate(value: object) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):

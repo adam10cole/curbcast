@@ -7,18 +7,19 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+type JSONDict = dict[str, Any]
+
 
 class ExtractError(Exception): ...  # base error class
 
 
-class ArcGISError(
-    ExtractError
-): ...  # server returned HTTP 200 but has {"error"} in body
+class ArcGISError(ExtractError): ...  # server returned HTTP 200 but has {"error"} in body
 
 
 class CountMismatchError(ExtractError): ...  # fetched rows != expected rows
@@ -56,13 +57,11 @@ def build_session() -> requests.Session:
 
     session = requests.Session()
     session.mount("https://", HTTPAdapter(max_retries=retry))
-    session.headers["User-Agent"] = (
-        "curbcast-ingest/0.1 (+https://github.com/adam10cole/curbcast)"
-    )
+    session.headers["User-Agent"] = "curbcast-ingest/0.1 (+https://github.com/adam10cole/curbcast)"
     return session
 
 
-def get_json(session: requests.Session, url: str, params: dict | None = None) -> dict:
+def get_json(session: requests.Session, url: str, params: JSONDict | None = None) -> JSONDict:
     params = {"f": "json", **(params or {})}
     log.debug("GET %s params=%s", url, params)
 
@@ -72,15 +71,14 @@ def get_json(session: requests.Session, url: str, params: dict | None = None) ->
     try:
         body = response.json()
     except requests.JSONDecodeError as exc:
-        raise ArcGISError(
-            f"Non JSON response from {url}: {response.text[:200]!r}"
-        ) from exc
+        raise ArcGISError(f"Non JSON response from {url}: {response.text[:200]!r}") from exc
+
+    if not isinstance(body, dict):
+        raise ArcGISError(f"Expected a JSON object from {url}, got {type(body).__name__}")
 
     if "error" in body:
         err = body["error"]
-        raise ArcGISError(
-            f"ArcGIS error {err.get('code')} from {url}: {err.get('message')}"
-        )
+        raise ArcGISError(f"ArcGIS error {err.get('code')} from {url}: {err.get('message')}")
 
     return body
 
@@ -109,10 +107,13 @@ def find_layer_id(session: requests.Session, service_url: str, ref: MonthRef) ->
             f"{[layer['name'] for layer in matches]}"
         )
 
-    return matches[0]["id"]
+    layer_id = matches[0]["id"]
+    if not isinstance(layer_id, int):
+        raise ArcGISError(f"Layer ID is not an int: {layer_id!r}")
+    return layer_id
 
 
-def fetch_layer_metadata(session: requests.Session, layer_url: str) -> dict:
+def fetch_layer_metadata(session: requests.Session, layer_url: str) -> JSONDict:
     return get_json(session, layer_url)
 
 
@@ -138,7 +139,7 @@ def iter_pages(
     layer_url: str,
     oid_field: str,
     page_size: int,
-) -> Iterator[dict]:
+) -> Iterator[JSONDict]:
     last_seen = -1
     while True:
         payload = get_json(
@@ -157,15 +158,13 @@ def iter_pages(
 
         page_max = max(feature["attributes"][oid_field] for feature in features)
         if page_max <= last_seen:
-            raise ArcGISError(
-                f"Paging stalled at {oid_field}={last_seen} on {layer_url}"
-            )
+            raise ArcGISError(f"Paging stalled at {oid_field}={last_seen} on {layer_url}")
 
         yield payload
         last_seen = page_max
 
 
-def write_page(out_dir: Path, page_num: int, payload: dict) -> str:
+def write_page(out_dir: Path, page_num: int, payload: JSONDict) -> str:
     return _write_json(out_dir / f"page_{page_num:04d}.json", payload)
 
 
@@ -192,7 +191,7 @@ def extract_month(
     page_size = int(metadata.get("maxRecordCount", DEFAULT_PAGE_SIZE))
 
     expected = fetch_count(session, layer_url)
-    pages: list[dict] = []
+    pages: list[JSONDict] = []
     fetched = 0
 
     for page_num, payload in enumerate(
@@ -200,16 +199,12 @@ def extract_month(
     ):
         rows = len(payload["features"])
         sha256 = write_page(work_dir, page_num, payload)
-        pages.append(
-            {"file": f"page_{page_num:04d}.json", "rows": rows, "sha256": sha256}
-        )
+        pages.append({"file": f"page_{page_num:04d}.json", "rows": rows, "sha256": sha256})
         fetched += rows
         log.debug("%s page %d: %d rows (%d/%d)", ref, page_num, rows, fetched, expected)
 
     if fetched != expected:
-        raise CountMismatchError(
-            f"{ref}: server reported {expected} rows but fetched {fetched}"
-        )
+        raise CountMismatchError(f"{ref}: server reported {expected} rows but fetched {fetched}")
 
     manifest = {
         "month": str(ref),
@@ -237,16 +232,16 @@ def _normalize(text: str) -> str:
     return text.replace("_", " ").lower()
 
 
-def _oid_field(metadata: dict) -> str:
+def _oid_field(metadata: JSONDict) -> str:
     for field in metadata.get("fields", []):
         if field.get("type") == "esriFieldTypeOID":
-            return field["name"]
+            name = field["name"]
+            if isinstance(name, str):
+                return name
     return DEFAULT_OID_FIELD
 
 
-def _write_json(path: Path, payload: dict) -> str:
-    data = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode(
-        "utf-8"
-    )
+def _write_json(path: Path, payload: JSONDict) -> str:
+    data = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     path.write_bytes(data)
     return hashlib.sha256(data).hexdigest()
