@@ -1,11 +1,15 @@
-from calendar import month
+import logging
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
-from zipfile import Path
-from curbcast.ingest.normalize import REJECT_SCHEMA, VIOLATION_SCHEMA
-import pyarrow.parquet as pq
-import pyarrow.compute as pc
+
 import psycopg
+import pyarrow.compute as pc
+import pyarrow.parquet as pq
+
+from curbcast.ingest.normalize import VIOLATION_SCHEMA
+
+log = logging.getLogger(__name__)
 
 VIOLATION_COLUMNS = VIOLATION_SCHEMA.names
 
@@ -42,7 +46,8 @@ def load_month(conn: psycopg.Connection, clean_dir: Path) -> LoadResult:
             for row in violations.to_pylist():
                 copy.write_row([row[col] for col in VIOLATION_COLUMNS])
 
-        with cur.copy(f"COPY violation_rejects ({', '.join(REJECT_TABLE_COLUMNS)}) FROM STDIN") as copy:
+        with cur.copy(f"COPY violation_rejects " \
+                      f"({', '.join(REJECT_TABLE_COLUMNS)}) FROM STDIN") as copy:
             for row in rejects.to_pylist():
                 copy.write_row([row[col] for col in REJECT_PARQUET_COLUMNS])
 
@@ -60,6 +65,8 @@ def load_month(conn: psycopg.Connection, clean_dir: Path) -> LoadResult:
                 f"{month}: loaded {count_rejects} rejects, file has {rejects.num_rows}"
             )
 
+        log.info("Loaded %s: %d violations and %d rejects", month, count_violations, 
+                 count_rejects)
         return LoadResult(
             month=month,
             violations=count_violations,
