@@ -94,7 +94,7 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "backfill":
             settings.require_database_url()
             with psycopg.connect(settings.require_database_url(), autocommit=True) as conn:
-                do_backfill(conn, settings, args.month, args.month)
+                do_backfill(conn, settings, args.start, args.end)
     except (ExtractError, NormalizeError, LoadError) as exc:
         log.error("%s", exc)
         return 1
