@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 TIME_12H = re.compile(r"^(\d{1,2}):(\d{2})\s?([AP]M)$", re.IGNORECASE)
 TIME_HHMM = re.compile(r"^\d{1,4}$")
 
-DC_TIMEZONE = ZoneInfo("America/New Yokr")
+DC_TIMEZONE = ZoneInfo("America/New_York")
 DC_BOUNDARIES = (-77.12, 38.79, -76.91, 39.00)  # (min long, lat, max long, lat)
 
 
