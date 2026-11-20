@@ -186,20 +186,21 @@ def extract_month(
     layer_url = f"{service_url}/{layer_id}"
     log.info("Starting extraction %s from %s", ref, layer_url)
 
+    metadata = fetch_layer_metadata(session, layer_url)
+    oid_field = _oid_field(metadata)
+    page_size = int(metadata.get("maxRecordCount", DEFAULT_PAGE_SIZE))
+
+    expected = fetch_count(session, layer_url)
+    if expected == 0:
+        raise MonthNotPublishedError(f"{ref}: table exists at {layer_url} but has no data")
+
     final_dir = data_dir / "raw" / f"year={ref.year}" / f"month={ref.month:02d}"
     work_dir = final_dir.with_name(final_dir.name + ".partial")
     if work_dir.exists():
         shutil.rmtree(work_dir)
     work_dir.mkdir(parents=True)
-
-    metadata = fetch_layer_metadata(session, layer_url)
     _write_json(work_dir / "layer_metadata.json", metadata)
-    oid_field = _oid_field(metadata)
-    page_size = int(metadata.get("maxRecordCount", DEFAULT_PAGE_SIZE))
 
-    expected = fetch_count(session, layer_url)
-    if(expected == 0):
-        raise MonthNotPublishedError(f"{ref}: table exists at {layer_url} but has no data")
     pages: list[JSONDict] = []
     fetched = 0
 
@@ -234,11 +235,11 @@ def extract_month(
 
     log.info("Extracted %s: %d rows in %d pages", ref, fetched, len(pages))
     return ExtractResult(
-        str(ref),
-        expected,
-        fetched, 
-        len(pages),
-        final_dir
+        month=str(ref),
+        expected=expected,
+        fetched=fetched, 
+        pages=len(pages),
+        out_dir=final_dir
     )
 
 
