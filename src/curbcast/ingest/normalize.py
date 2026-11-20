@@ -45,6 +45,7 @@ VIOLATION_SCHEMA = pa.schema(
 
 REJECT_SCHEMA = pa.schema(
     [
+        ("source_month", pa.string()),
         ("source_objectid", pa.int64()),
         ("field", pa.string()),
         ("reason", pa.string()),
@@ -91,6 +92,7 @@ class Violation:
 
 @dataclass(frozen=True)
 class Reject:
+    source_month: str
     source_objectid: int | None
     field: str
     reason: str
@@ -196,6 +198,7 @@ def normalize_record(attrs: Mapping[str, Any], source_month: str) -> Violation |
         )
     except FieldError as exc:
         return Reject(
+            source_month=source_month,
             source_objectid=attrs.get("OBJECTID"),
             field=exc.field,
             reason=exc.reason,
@@ -331,6 +334,7 @@ def _rejects_table(rows: list[Reject]) -> pa.Table:
     return pa.Table.from_pylist(
         [
             {
+                "source_month": r.source_month,
                 "source_objectid": r.source_objectid,
                 "field": r.field,
                 "reason": r.reason,

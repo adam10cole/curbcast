@@ -156,7 +156,8 @@ CREATE TABLE public.violation_rejects (
     source_objectid bigint,
     reason text NOT NULL,
     raw jsonb NOT NULL,
-    loaded_at timestamp with time zone DEFAULT now() NOT NULL
+    loaded_at timestamp with time zone DEFAULT now() NOT NULL,
+    field text NOT NULL
 );
 
 
@@ -279,4 +280,5 @@ CREATE INDEX violations_issued_idx ON public.violations USING btree (issued_at_u
 INSERT INTO public.schema_migrations (version) VALUES
     ('001'),
     ('002'),
-    ('003');
+    ('003'),
+    ('004');
