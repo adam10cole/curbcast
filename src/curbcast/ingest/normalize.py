@@ -2,6 +2,11 @@ from dataclasses import dataclass
 import datetime
 from decimal import Decimal
 
+class FieldError(Exception):
+    def __init__(self, field: str, reason: str) -> None:
+        super().__init__(f"{field}: {reason}")
+        self.field = field
+        self.reason = reason
 
 @dataclass(frozen=True)
 class Violation:
@@ -24,3 +29,8 @@ class Reject:
     source_objectid: int | None
     reason: str
     raw: dict
+
+def normalize_record(attrs: dict, source_month: str) -> Violation | Reject:
+    ...
+
+#def normalize_month(raw_dir: Path, clean_dir: Path) -> NormalizeResult: 
