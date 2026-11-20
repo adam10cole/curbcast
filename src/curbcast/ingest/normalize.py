@@ -1,17 +1,68 @@
+import dataclasses
+import hashlib
+import json
+import logging
 import math
 import re
+import shutil
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
+
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 TIME_12H = re.compile(r"^(\d{1,2}):(\d{2})\s?([AP]M)$", re.IGNORECASE)
 TIME_HHMM = re.compile(r"^\d{1,4}$")
 
 DC_TIMEZONE = ZoneInfo("America/New_York")
 DC_BOUNDARIES = (-77.12, 38.79, -76.91, 39.00)  # (min long, lat, max long, lat)
+
+log = logging.getLogger(__name__)
+MAX_REJECT_RATE = 0.01
+
+VIOLATION_SCHEMA = pa.schema(
+    [
+        ("ticket_number", pa.string()),
+        ("issued_at_utc", pa.timestamp("us", tz="UTC")),
+        ("issued_local_hour", pa.int8()),
+        ("issued_local_weekday", pa.int8()),
+        ("violation_code", pa.string()),
+        ("violation_desc", pa.string()),
+        ("agency_code", pa.string()),
+        ("fine_amount", pa.decimal128(10, 2)),
+        ("latitude", pa.float64()),
+        ("longitude", pa.float64()),
+        ("is_geocoded", pa.bool_()),
+        ("source_month", pa.string()),
+        ("source_objectid", pa.int64()),
+    ]
+)
+
+REJECT_SCHEMA = pa.schema(
+    [
+        ("source_objectid", pa.int64()),
+        ("field", pa.string()),
+        ("reason", pa.string()),
+        ("raw_json", pa.string()),
+    ]
+)
+
+
+class NormalizeError(Exception): ...
+
+
+class RawDataError(NormalizeError): ...
+
+
+class RowCountError(NormalizeError): ...
+
+
+class RejectRateError(NormalizeError): ...
 
 
 class FieldError(Exception):
@@ -44,6 +95,16 @@ class Reject:
     field: str
     reason: str
     raw: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class NormalizeResult:
+    month: str
+    total: int
+    clean: int
+    rejected: int
+    geocoded: int
+    out_dir: Path
 
 
 def parse_ticket_number(value: object) -> str:
@@ -158,7 +219,61 @@ def normalize_record(attrs: Mapping[str, Any], source_month: str) -> Violation |
     )
 
 
-# def normalize_month(raw_dir: Path, clean_dir: Path) -> NormalizeResult:
+def normalize_month(raw_dir: Path, clean_dir: Path) -> NormalizeResult:
+    manifest = _load_manifest(raw_dir)
+    month = str(manifest["month"])
+
+    violations: list[Violation] = []
+    rejects: list[Reject] = []
+    for page in manifest["pages"]:
+        for attrs in _read_verified_page(raw_dir, page):
+            outcome = normalize_record(attrs, month)
+            if isinstance(outcome, Reject):
+                rejects.append(outcome)
+            else:
+                violations.append(outcome)
+
+    total = len(violations) + len(rejects)
+    if total != manifest["fetched_count"]:
+        raise RowCountError(
+            f"{month}: processed {total} rows but manifest has {manifest['fetched_count']} rows"
+        )
+
+    if total == 0:
+        raise RawDataError(f"{month}: no rows in {raw_dir}")
+
+    reject_rate = len(rejects) / total
+    if reject_rate > MAX_REJECT_RATE:
+        raise RejectRateError(f"{month}: exceeded the max reject rate")
+
+    work_dir = clean_dir.with_name(clean_dir.name + ".partial")
+    if work_dir.exists():
+        shutil.rmtree(work_dir)
+    work_dir.mkdir(parents=True)
+
+    pq.write_table(_violations_table(violations), work_dir / "violations.parquet")
+    pq.write_table(_rejects_table(rejects), work_dir / "rejects.parquet")
+
+    if clean_dir.exists():
+        shutil.rmtree(clean_dir)
+    work_dir.rename(clean_dir)
+
+    result = NormalizeResult(
+        month=month,
+        total=total,
+        clean=len(violations),
+        rejected=len(rejects),
+        geocoded=sum(v.is_geocoded for v in violations),
+        out_dir=clean_dir,
+    )
+    log.info(
+        "Normalized %s: %d clean and %d rejected (%.2f%%)",
+        month,
+        result.clean,
+        result.rejected,
+        reject_rate * 100,
+    )
+    return result
 
 
 # Helpers
@@ -190,3 +305,38 @@ def _is_missing(value: object) -> bool:
 
 def _optional[T](value: object, parse: Callable[[object], T]) -> T | None:
     return None if _is_missing(value) else parse(value)
+
+
+def _load_manifest(raw_dir: Path) -> dict[str, Any]:
+    path = raw_dir / "manifest.json"
+    if not path.exists():
+        raise RawDataError(f"No manifest in {raw_dir}")
+    manifest: dict[str, Any] = json.loads(path.read_text())
+    return manifest
+
+
+def _read_verified_page(raw_dir: Path, page: Mapping[str, Any]) -> list[dict[str, Any]]:
+    data = (raw_dir / page["file"]).read_bytes()
+    if hashlib.sha256(data).hexdigest() != page["sha256"]:
+        raise RawDataError(f"hash error for {page['file']} in {raw_dir}")
+    payload = json.loads(data)
+    return [feature["attributes"] for feature in payload["features"]]
+
+
+def _violations_table(rows: list[Violation]) -> pa.Table:
+    return pa.Table.from_pylist([dataclasses.asdict(r) for r in rows], schema=VIOLATION_SCHEMA)
+
+
+def _rejects_table(rows: list[Reject]) -> pa.Table:
+    return pa.Table.from_pylist(
+        [
+            {
+                "source_objectid": r.source_objectid,
+                "field": r.field,
+                "reason": r.reason,
+                "raw_json": json.dumps(r.raw, sort_keys=True),
+            }
+            for r in rows
+        ],
+        schema=REJECT_SCHEMA,
+    )

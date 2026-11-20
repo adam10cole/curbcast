@@ -5,6 +5,8 @@ description = "DC parking ticket risk map"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "pandas>=3.1.1",
+    "pyarrow>=26.0.1",
     "requests>=2.34.2",
 ]
 
@@ -32,3 +34,7 @@ dev = [
     "ruff>=0.17.6",
     "types-requests>=2.33.0.20261030",
 ]
+
+[[tool.mypy.overrides]]
+module = ["pyarrow", "pyarrow.*"]
+ignore_missing_imports = true
