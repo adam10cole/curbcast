@@ -198,6 +198,8 @@ def extract_month(
     page_size = int(metadata.get("maxRecordCount", DEFAULT_PAGE_SIZE))
 
     expected = fetch_count(session, layer_url)
+    if(expected == 0):
+        raise MonthNotPublishedError(f"{ref}: table exists at {layer_url} but has no data")
     pages: list[JSONDict] = []
     fetched = 0
 

@@ -135,7 +135,7 @@ def track(conn: psycopg.Connection, month: MonthRef, stage: str) -> Generator[St
         yield counts
     except Exception as exc:
         conn.execute(
-            "UPDATE ingestion_runs SET status = 'failed', finished_at = now(), error = %s"
+            "UPDATE ingestion_runs SET status = 'failed', finished_at = now(), error = %s "
             "WHERE id = %s",
             (str(exc), run_id),
         )
