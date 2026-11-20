@@ -1,11 +1,16 @@
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 import datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
+import math
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 from datetime import UTC, date, datetime, time
+import re
+
+TIME_12H = re.compile(r"^(\d{1,2}):(\d{2})\s?([AP]M)$", re.IGNORECASE)
+TIME_HHMM = re.compile(r"^\d{1,4}$")
 
 DC_TIMEZONE = ZoneInfo("America/New Yokr")
 DC_BOUNDARIES = (-77.12, 38.79, -76.91, 39.00)      # (min long, lat, max long, lat)
@@ -38,12 +43,68 @@ class Reject:
     reason: str
     raw: dict
 
-def parse_ticket_number(value: object) -> str: ...
-def parse_issue_date(value: object) -> date: ...
-def parse_issue_time(value: object) -> time: ...
-def parse_text(value: object, field: str) -> str: ...
-def parse_fine(value: object) -> Decimal: ...
-def parse_coords(lat: object, lon: object) -> tuple[float | None, float | None, bool]: ...
+def parse_ticket_number(value: object) -> str:
+    return str(_require(value, "TICKET_NUMBER", str, int)).strip()
+
+def parse_issue_date(value: object) -> date:
+    millis = _require(value, "ISSUE_DATE", int)
+    try: 
+        moment = datetime.fromtimestamp(millis / 1000, tz=UTC)
+    except (OverflowError, OSError, ValueError) as exc:
+        raise FieldError("ISSUE_DATE", f"not valid timestamp: {value!r}") from exc
+
+    issued = moment.astimezone(DC_TIMEZONE).date()
+    if not 200 <= issued.year <= datetime.now(UTC).year + 1:
+        raise FieldError("ISSUE_DATE", f"not a possible year {issued.year}: {value!r}")
+
+    return issued
+
+def parse_issue_time(value: object) -> time: 
+    text = str(_require(value, "TICKET_NUMBER", str, int)).strip()
+
+    if match := TIME_12H.match(text):
+        hour, minute = int(match[1]), int(match[2])
+        if not 1 <= hour <= 12:
+            raise FieldError("ISSUE_TIME", f"12 hour value out of range: {value!r}")
+        hour = hour % 12 + (12 if match[3].upper() == "PM" else 0)
+    elif TIME_HHMM.match(text):
+        hour, minute = divmod(int(text), 100)
+    else:
+        raise FieldError("ISSUE_TIME", f"unexpected format: {value!r}")
+
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        raise FieldError("ISSUE_TIME", f"out of the range: {value!r}")
+
+    return time(hour, minute)
+
+def parse_text(value: object, field: str) -> str:
+    text = str(_require(value, field, str, int))
+    return "".join(text.split())
+def parse_fine(value: object) -> Decimal:
+    amount = _require(value, "FINE_AMOUNT", int, float)
+
+    try:
+        fine = Decimal(str(amount))
+    except InvalidOperation as exc:
+        raise FieldError("FINE_AMOUNT", f"not a number: {value!r}") from exc
+
+    if not fine.is_finite():
+        raise FieldError("FINE_AMOUNT", f"not a finite number: {value!r}")
+    if fine < 0:
+        raise FieldError("FINE_AMOUNT", f"negative: {value!r}")
+
+    return fine.quantize(Decimal("0.01"))
+
+def parse_coords(lat: object, lon: object) -> tuple[float | None, float | None, bool]:
+    latitude, longitude = _as_coordinate(lat), _as_coordinate(lon)
+    if latitude is None or longitude is None:
+        return None, None, False
+
+    min_lon, min_lat, max_lon, max_lat = DC_BOUNDARIES
+    if not (min_lat <= latitude <= max_lat and min_lon <= longitude <= max_lon):
+        return None, None, False
+
+    return latitude, longitude, True
 
 def normalize_record(attrs: Mapping[str, Any], source_month: str) -> Violation | Reject:
     try:
@@ -85,3 +146,24 @@ def normalize_record(attrs: Mapping[str, Any], source_month: str) -> Violation |
     )
 
 #def normalize_month(raw_dir: Path, clean_dir: Path) -> NormalizeResult: 
+
+# Helpers
+def _require[T](value: object, field: str, *allowed: type[T]) -> T:
+    if value is None:
+        raise FieldError(field, "missing")
+    if isinstance(value, bool):
+        raise FieldError(field, f"unexpected boolean: {value!r}")
+    if isinstance(value, str) and not value.strip():
+        raise FieldError(field, "empty")
+    if not isinstance(value, allowed):
+        expected = " or ".join(t.__name__ for t in allowed)
+        raise FieldError(field, f"expected {expected} but got {type(value).__name__}: {value!r}")
+    return value
+
+def _as_coordinate(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    if not math.isfinite(number) or number == 0:
+        return None
+    return number
