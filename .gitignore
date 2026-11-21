@@ -1,4 +1,6 @@
-data/
+data/*
+!data/reference/
+notebooks/*
 .ruff_cache
 .mypy_cache
 .venv
