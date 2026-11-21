@@ -206,7 +206,8 @@ END) STORED,
     CONSTRAINT violations_fine_amount_check CHECK ((fine_amount >= (0)::numeric)),
     CONSTRAINT violations_issued_local_hour_check CHECK (((issued_local_hour >= 0) AND (issued_local_hour <= 23))),
     CONSTRAINT violations_issued_local_weekday_check CHECK (((issued_local_weekday >= 0) AND (issued_local_weekday <= 6))),
-    CONSTRAINT violations_location_source_check CHECK ((location_source = ANY (ARRAY['xy'::text, 'latlong'::text])))
+    CONSTRAINT violations_location_source_check CHECK ((location_source = ANY (ARRAY['xy'::text, 'latlong'::text]))),
+    CONSTRAINT violations_location_src_match CHECK ((is_geocoded = (location_source IS NOT NULL)))
 );
 
 
@@ -232,14 +233,6 @@ ALTER TABLE ONLY public.schema_migrations
 
 ALTER TABLE ONLY public.violation_rejects
     ADD CONSTRAINT violation_rejects_pkey PRIMARY KEY (id);
-
-
---
--- Name: violations violations_location_src_match; Type: CHECK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE public.violations
-    ADD CONSTRAINT violations_location_src_match CHECK ((is_geocoded = (location_source IS NOT NULL))) NOT VALID;
 
 
 --
@@ -294,4 +287,5 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('002'),
     ('003'),
     ('004'),
-    ('005');
+    ('005'),
+    ('006');
