@@ -15,9 +15,12 @@ from zoneinfo import ZoneInfo
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+from pyproj import Transformer
 
 TIME_12H = re.compile(r"^(\d{1,2}):(\d{2})\s?([AP]M)$", re.IGNORECASE)
 TIME_HHMM = re.compile(r"^\d{1,4}$")
+
+_TO_WGS84 = Transformer.from_crs("EPSG:26985", "EPSG:4326", always_xy=True)
 
 DC_TIMEZONE = ZoneInfo("America/New_York")
 DC_BOUNDARIES = (-77.12, 38.79, -76.91, 39.00)  # (min long, lat, max long, lat)
@@ -37,6 +40,9 @@ VIOLATION_SCHEMA = pa.schema(
         ("fine_amount", pa.decimal128(10, 2)),
         ("latitude", pa.float64()),
         ("longitude", pa.float64()),
+        ("x", pa.float64()),
+        ("y", pa.float64()),
+        ("location_source", pa.string()),
         ("is_geocoded", pa.bool_()),
         ("source_month", pa.string()),
         ("source_objectid", pa.int64()),
@@ -74,6 +80,15 @@ class FieldError(Exception):
 
 
 @dataclass(frozen=True)
+class Location:
+    lat: float | None
+    long: float | None
+    x: float | None
+    y: float | None
+    source: str | None  # xy or latlong
+
+
+@dataclass(frozen=True)
 class Violation:
     ticket_number: str
     issued_at_utc: datetime
@@ -85,6 +100,9 @@ class Violation:
     fine_amount: Decimal | None
     latitude: float | None
     longitude: float | None
+    x: float | None
+    y: float | None
+    location_source: str | None
     is_geocoded: bool
     source_month: str
     source_objectid: int
@@ -167,16 +185,18 @@ def parse_fine(value: object) -> Decimal:
     return fine.quantize(Decimal("0.01"))
 
 
-def parse_coords(lat: object, lon: object) -> tuple[float | None, float | None, bool]:
-    latitude, longitude = _as_coordinate(lat), _as_coordinate(lon)
-    if latitude is None or longitude is None:
-        return None, None, False
+def parse_location(x: object, y: object, lat: object, long: object) -> Location:
+    px, py = _as_coordinate(x), _as_coordinate(y)
+    if px is not None and py is not None:
+        long_xy, lat_xy = _TO_WGS84.transform(px, py)
+        if _in_dc(lat_xy, long_xy):
+            return Location(lat_xy, long_xy, px, py, "xy")
 
-    min_lon, min_lat, max_lon, max_lat = DC_BOUNDARIES
-    if not (min_lat <= latitude <= max_lat and min_lon <= longitude <= max_lon):
-        return None, None, False
+    plat, plong = _as_coordinate(lat), _as_coordinate(long)
+    if plat is not None and plong is not None and _in_dc(plat, plong):
+        return Location(plat, plong, None, None, "latlong")
 
-    return latitude, longitude, True
+    return Location(None, None, None, None, None)
 
 
 def normalize_record(attrs: Mapping[str, Any], source_month: str) -> Violation | Reject:
@@ -193,8 +213,8 @@ def normalize_record(attrs: Mapping[str, Any], source_month: str) -> Violation |
         )
         agency_code = parse_text(attrs.get("ISSUING_AGENCY_CODE"), "ISSUING_AGENCY_CODE")
         fine_amount = _optional(attrs.get("FINE_AMOUNT"), parse_fine)
-        latitude, longitude, is_geocoded = parse_coords(
-            attrs.get("LATITUDE"), attrs.get("LONGITUDE")
+        location = parse_location(
+            attrs.get("XCOORD"), attrs.get("YCOORD"), attrs.get("LATITUDE"), attrs.get("LONGITUDE")
         )
     except FieldError as exc:
         return Reject(
@@ -214,9 +234,12 @@ def normalize_record(attrs: Mapping[str, Any], source_month: str) -> Violation |
         violation_desc=violation_desc,
         agency_code=agency_code,
         fine_amount=fine_amount,
-        latitude=latitude,
-        longitude=longitude,
-        is_geocoded=is_geocoded,
+        latitude=location.lat,
+        longitude=location.long,
+        x=location.x,
+        y=location.y,
+        location_source=location.source,
+        is_geocoded=location.source is not None,
         source_month=source_month,
         source_objectid=attrs["OBJECTID"],
     )
@@ -344,3 +367,8 @@ def _rejects_table(rows: list[Reject]) -> pa.Table:
         ],
         schema=REJECT_SCHEMA,
     )
+
+
+def _in_dc(lat: float, long: float) -> bool:
+    min_long, min_lat, max_long, max_lat = DC_BOUNDARIES
+    return min_lat <= lat <= max_lat and min_long <= long <= max_long

@@ -2,11 +2,10 @@
 # super small ~1% so it's better to just reject then accept them as null in 
 # the normalized schema 
 
-from collections import Counter
 import json
-from pathlib import Path
 import re
-
+from collections import Counter
+from pathlib import Path
 
 for month in ("year=2016/month=09", "year=2026/month=09"):
     shapes: Counter[str] = Counter()

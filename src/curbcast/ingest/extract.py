@@ -39,6 +39,7 @@ class MonthRef:
     def __str__(self) -> str:
         return f"{self.year}-{self.month:02d}"
 
+
 @dataclass(frozen=True)
 class ExtractResult:
     month: str
@@ -46,6 +47,7 @@ class ExtractResult:
     fetched: int
     pages: int
     out_dir: Path
+
 
 log = logging.getLogger(__name__)
 TIMEOUT = (5, 30)  # connect, read (in seconds)
@@ -235,11 +237,7 @@ def extract_month(
 
     log.info("Extracted %s: %d rows in %d pages", ref, fetched, len(pages))
     return ExtractResult(
-        month=str(ref),
-        expected=expected,
-        fetched=fetched, 
-        pages=len(pages),
-        out_dir=final_dir
+        month=str(ref), expected=expected, fetched=fetched, pages=len(pages), out_dir=final_dir
     )
 
 

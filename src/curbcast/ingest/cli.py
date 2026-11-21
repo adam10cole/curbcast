@@ -25,6 +25,7 @@ log = logging.getLogger("curbcast")
 
 DEFAULT_ARCGIS_BASE_URL = "https://maps2.dcgis.dc.gov/dcgis/rest/services/DCGIS_DATA"
 
+
 @dataclass(frozen=True)
 class Settings:
     data_dir: Path
@@ -44,16 +45,19 @@ class Settings:
             raise SystemExit("DATABASE_URL is not set or not running with .env file")
         return self.database_url
 
+
 def parse_month(text: str) -> MonthRef:
-    try: 
+    try:
         year, month = text.split("-")
         return MonthRef(int(year), int(month))
     except ValueError as exc:
         raise argparse.ArgumentTypeError(f"Needs YYYY-MM, not {text!r}") from exc
 
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="curbcast", description="DC " \
-    "parking ticket risk map (CLI)")
+    parser = argparse.ArgumentParser(
+        prog="curbcast", description="DC parking ticket risk map (CLI)"
+    )
     parser.add_argument("-v", "--verbose", action="store_true", help="show debug logging")
     commands = parser.add_subparsers(dest="command", required=True)
 
@@ -61,7 +65,7 @@ def build_parser() -> argparse.ArgumentParser:
         ("extract", "download one month of raw data"),
         ("normalize", "clean one month of raw data"),
         ("load", "load one month of cleaned data into Postgres"),
-        ("run", "extract, normalize, and load one month")
+        ("run", "extract, normalize, and load one month"),
     ]:
         sub = commands.add_parser(name, help=help_text)
         sub.add_argument("--month", type=parse_month, required=True, help="YYYY-MM")
@@ -69,14 +73,16 @@ def build_parser() -> argparse.ArgumentParser:
     backfill = commands.add_parser("backfill", help="run every month in certain range")
     backfill.add_argument("--start", type=parse_month, required=True, help="YYYY-MM")
     backfill.add_argument("--end", type=parse_month, required=True, help="YYYY-MM")
+    backfill.add_argument("--skip-extract", action="store_true", help="reuse raw files")
     return parser
+
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    ) 
+    )
     settings = Settings.from_env()
 
     try:
@@ -88,13 +94,11 @@ def main(argv: list[str] | None = None) -> int:
             with psycopg.connect(settings.require_database_url(), autocommit=True) as conn:
                 do_load(conn, settings, args.month)
         elif args.command == "run":
-            settings.require_database_url()
             with psycopg.connect(settings.require_database_url(), autocommit=True) as conn:
                 do_run(conn, settings, args.month)
         elif args.command == "backfill":
-            settings.require_database_url()
             with psycopg.connect(settings.require_database_url(), autocommit=True) as conn:
-                do_backfill(conn, settings, args.start, args.end)
+                do_backfill(conn, settings, args.start, args.end, skip_extract=args.skip_extract)
     except (ExtractError, NormalizeError, LoadError) as exc:
         log.error("%s", exc)
         return 1
@@ -152,16 +156,20 @@ def track(conn: psycopg.Connection, month: MonthRef, stage: str) -> Generator[St
 # extract    | server count     | rows fetched      | null
 # normalize  | rows in raw files| clean rows        | rejected rows
 # load       | rows in parquet  | violations loaded | rejects loaded
-def do_run(conn: psycopg.Connection, settings: Settings, month: MonthRef) -> None:
-    # cur.execute("DELETE FROM violations WHERE source_month = %s", (month,))
-    with track(conn, month, "extract") as counts:
-        extracted = do_extract(settings, month)
-        counts.expected, counts.clean = extracted.expected, extracted.fetched
+def do_run(
+    conn: psycopg.Connection, settings: Settings, month: MonthRef, skip_extract: bool = False
+) -> None:
+    if not skip_extract:
+        with track(conn, month, "extract") as counts:
+            extracted = do_extract(settings, month)
+            counts.expected, counts.clean = extracted.expected, extracted.fetched
 
     with track(conn, month, "normalize") as counts:
         normalized = do_normalize(settings, month)
         counts.expected, counts.clean, counts.rejected = (
-            normalized.total, normalized.clean, normalized.rejected
+            normalized.total,
+            normalized.clean,
+            normalized.rejected,
         )
 
     with track(conn, month, "load") as counts:
@@ -170,14 +178,21 @@ def do_run(conn: psycopg.Connection, settings: Settings, month: MonthRef) -> Non
         counts.clean, counts.rejected = loaded.violations, loaded.rejects
 
 
-def do_backfill(conn: psycopg.Connection, settings: Settings, 
-                start: MonthRef, end: MonthRef) -> None:
+def do_backfill(
+    conn: psycopg.Connection,
+    settings: Settings,
+    start: MonthRef,
+    end: MonthRef,
+    skip_extract: bool = False,
+) -> None:
     for month in month_range(start, end):
         try:
-            do_run(conn, settings, month)
+            do_run(conn, settings, month, skip_extract=skip_extract)
         except MonthNotPublishedError:
             log.info("Skipping %s its not published yet", month)
-        time.sleep(2)  # let's try not to get rate limited
+        if not skip_extract:
+            time.sleep(2)  # let's try not to get rate limited
+
 
 def raw_dir(settings: Settings, month: MonthRef) -> Path:
     return settings.data_dir / "raw" / f"year={month.year}" / f"month={month.month:02d}"
@@ -192,6 +207,7 @@ def month_range(start: MonthRef, end: MonthRef) -> Iterator[MonthRef]:
     while (year, month) <= (end.year, end.month):
         yield MonthRef(year, month)
         year, month = (year + 1, 1) if month == 12 else (year, month + 1)
+
 
 if __name__ == "__main__":
     sys.exit(main())

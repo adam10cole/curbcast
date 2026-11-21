@@ -1,4 +1,5 @@
 from pathlib import Path
+
 from curbcast.ingest.normalize import normalize_month
 
 print(normalize_month(

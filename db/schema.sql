@@ -199,10 +199,14 @@ CASE
     WHEN is_geocoded THEN public.st_setsrid(public.st_makepoint(longitude, latitude), 4326)
     ELSE NULL::public.geometry
 END) STORED,
+    x double precision,
+    y double precision,
+    location_source text,
     CONSTRAINT violations_check CHECK ((is_geocoded = ((latitude IS NOT NULL) AND (longitude IS NOT NULL)))),
     CONSTRAINT violations_fine_amount_check CHECK ((fine_amount >= (0)::numeric)),
     CONSTRAINT violations_issued_local_hour_check CHECK (((issued_local_hour >= 0) AND (issued_local_hour <= 23))),
-    CONSTRAINT violations_issued_local_weekday_check CHECK (((issued_local_weekday >= 0) AND (issued_local_weekday <= 6)))
+    CONSTRAINT violations_issued_local_weekday_check CHECK (((issued_local_weekday >= 0) AND (issued_local_weekday <= 6))),
+    CONSTRAINT violations_location_source_check CHECK ((location_source = ANY (ARRAY['xy'::text, 'latlong'::text])))
 );
 
 
@@ -228,6 +232,14 @@ ALTER TABLE ONLY public.schema_migrations
 
 ALTER TABLE ONLY public.violation_rejects
     ADD CONSTRAINT violation_rejects_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: violations violations_location_src_match; Type: CHECK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE public.violations
+    ADD CONSTRAINT violations_location_src_match CHECK ((is_geocoded = (location_source IS NOT NULL))) NOT VALID;
 
 
 --
@@ -281,4 +293,5 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('001'),
     ('002'),
     ('003'),
-    ('004');
+    ('004'),
+    ('005');

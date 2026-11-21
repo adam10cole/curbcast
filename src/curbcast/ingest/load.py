@@ -13,12 +13,14 @@ log = logging.getLogger(__name__)
 
 VIOLATION_COLUMNS = VIOLATION_SCHEMA.names
 
-# Didn't make the parquet and the db table column names match exactly... 
+# Didn't make the parquet and the db table column names match exactly...
 # ugh so do it manually
 REJECT_PARQUET_COLUMNS = ["source_month", "source_objectid", "field", "reason", "raw_json"]
 REJECT_TABLE_COLUMNS = ["source_month", "source_objectid", "field", "reason", "raw"]
 
+
 class LoadError(Exception): ...
+
 
 @dataclass(frozen=True)
 class LoadResult:
@@ -26,12 +28,13 @@ class LoadResult:
     violations: int
     rejects: int
 
+
 def load_month(conn: psycopg.Connection, clean_dir: Path) -> LoadResult:
     violations = pq.read_table(clean_dir / "violations.parquet")
     rejects = pq.read_table(clean_dir / "rejects.parquet")
 
     # make sure we're only dealing with one month
-    months = set(pc.unique(violations["source_month"]).to_pylist()) | set (
+    months = set(pc.unique(violations["source_month"]).to_pylist()) | set(
         pc.unique(rejects["source_month"]).to_pylist()
     )
     if len(months) != 1:
@@ -46,8 +49,9 @@ def load_month(conn: psycopg.Connection, clean_dir: Path) -> LoadResult:
             for row in violations.to_pylist():
                 copy.write_row([row[col] for col in VIOLATION_COLUMNS])
 
-        with cur.copy(f"COPY violation_rejects " \
-                      f"({', '.join(REJECT_TABLE_COLUMNS)}) FROM STDIN") as copy:
+        with cur.copy(
+            f"COPY violation_rejects ({', '.join(REJECT_TABLE_COLUMNS)}) FROM STDIN"
+        ) as copy:
             for row in rejects.to_pylist():
                 copy.write_row([row[col] for col in REJECT_PARQUET_COLUMNS])
 
@@ -61,17 +65,11 @@ def load_month(conn: psycopg.Connection, clean_dir: Path) -> LoadResult:
                 f"{month}: loaded {count_violations} violations, file has {violations.num_rows}"
             )
         if count_rejects != rejects.num_rows:
-            raise LoadError(
-                f"{month}: loaded {count_rejects} rejects, file has {rejects.num_rows}"
-            )
+            raise LoadError(f"{month}: loaded {count_rejects} rejects, file has {rejects.num_rows}")
 
-        log.info("Loaded %s: %d violations and %d rejects", month, count_violations, 
-                 count_rejects)
-        return LoadResult(
-            month=month,
-            violations=count_violations,
-            rejects=count_rejects
-        )
+        log.info("Loaded %s: %d violations and %d rejects", month, count_violations, count_rejects)
+        return LoadResult(month=month, violations=count_violations, rejects=count_rejects)
+
 
 # Helpers
 def _fetch_count(cur: psycopg.Cursor[tuple[Any, ...]]) -> int:
