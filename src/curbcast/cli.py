@@ -5,7 +5,7 @@ import time
 from collections.abc import Generator, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -27,6 +27,7 @@ from curbcast.model.fit import FitError, fit
 from curbcast.model.hits import HitsError, load_hits
 from curbcast.model.holidays import HolidayError, estimate_holiday_factor, weekday_holidays
 from curbcast.model.params import ModelParams
+from curbcast.model.predict import NotEnoughData, PredictError, predict
 from curbcast.model.store import StoreError, activate_run, prune_runs, write_run
 
 log = logging.getLogger("curbcast")
@@ -40,6 +41,7 @@ HANDLED_ERRORS = (
     HolidayError,
     EvaluationError,
     StoreError,
+    PredictError,
 )
 
 
@@ -116,6 +118,22 @@ def build_parser() -> argparse.ArgumentParser:
         default=3,
         help="model runs to keep after activating (0 keeps all and default=3)",
     )
+
+    predict_parser = commands.add_parser("predict", help="ticket risk for a place and time")
+    predict_parser.add_argument("--lat", type=float, required=True)
+    predict_parser.add_argument("--lon", type=float, required=True)
+    predict_parser.add_argument(
+        "--when",
+        type=datetime.fromisoformat,
+        required=True,
+        help='DC local start time "2026-11-21 10:40"',
+    )
+    predict_parser.add_argument(
+        "--minutes",
+        type=parse_non_negative,
+        default=60,
+        help="how long you're staying (default 60)",
+    )
     return parser
 
 
@@ -152,6 +170,9 @@ def main(argv: list[str] | None = None) -> int:
                     activate=not args.no_activate,
                     keep=args.keep,
                 )
+        elif args.command == "predict":
+            with psycopg.connect(settings.require_database_url()) as conn:
+                do_predict(conn, args.lat, args.lon, args.when, args.minutes)
     except HANDLED_ERRORS as exc:
         log.error("%s", exc)
         return 1
@@ -348,6 +369,24 @@ def month_range(start: MonthRef, end: MonthRef) -> Iterator[MonthRef]:
     while (year, month) <= (end.year, end.month):
         yield MonthRef(year, month)
         year, month = (year + 1, 1) if month == 12 else (year, month + 1)
+
+
+def do_predict(
+    conn: psycopg.Connection, lat: float, lon: float, when: datetime, minutes: int
+) -> None:
+    result = predict(conn, lat, lon, when, timedelta(minutes=minutes))
+    if isinstance(result, NotEnoughData):
+        print(f"not enough data: {result.reason}")
+        return
+
+    print(
+        f"Block at {result.seg_lat:.5f}, {result.seg_lon:.5f} ({result.distance:.0f} m away)\n"
+        f"Model trained through: {result.model_cutoff}\n"
+    )
+    for hour in result.hours:
+        note = "  (holiday)" if hour.holiday else ""
+        print(f"  {hour.start:%a %d %b %H:%M}–{hour.end:%H:%M}  {hour.p:6.1%}{note}")
+    print(f"\nChance of a ticket during your stay: {result.combined:.1%}")
 
 
 if __name__ == "__main__":
