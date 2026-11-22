@@ -5,6 +5,7 @@ description = "DC parking ticket risk map"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "duckdb>=2.0.1",
     "pandas>=3.1.1",
     "psycopg>=3.3.9",
     "pyarrow>=26.0.1",
@@ -33,9 +34,11 @@ strict = true
 [dependency-groups]
 dev = [
     "duckdb>=2.0.1",
+    "holidays>=0.109",
     "jupyter>=1.1.1",
     "matplotlib>=3.11.2",
     "mypy>=2.4.1",
+    "pandas-stubs>=3.1.0.261029",
     "ruff>=0.17.6",
     "types-requests>=2.33.0.20261030",
 ]
