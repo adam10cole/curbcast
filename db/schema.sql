@@ -138,11 +138,83 @@ ALTER TABLE public.ingestion_runs ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTI
 
 
 --
+-- Name: model_runs; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.model_runs (
+    id bigint NOT NULL,
+    fitted_at timestamp with time zone DEFAULT now() NOT NULL,
+    train_start date NOT NULL,
+    cutoff_date date NOT NULL,
+    params jsonb NOT NULL,
+    holiday_factor double precision NOT NULL,
+    n_segments integer NOT NULL,
+    evaluation jsonb,
+    is_active boolean DEFAULT false NOT NULL,
+    CONSTRAINT model_runs_check CHECK ((train_start <= cutoff_date)),
+    CONSTRAINT model_runs_holiday_factor_check CHECK (((holiday_factor > (0)::double precision) AND (holiday_factor < (1)::double precision))),
+    CONSTRAINT model_runs_n_segments_check CHECK ((n_segments > 0))
+);
+
+
+--
+-- Name: model_runs_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.model_runs ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.model_runs_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: predictions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.predictions (
+    run_id bigint NOT NULL,
+    segment_id bigint NOT NULL,
+    p double precision[] NOT NULL,
+    CONSTRAINT predictions_p_check CHECK (((array_length(p, 1) = 168) AND ((0)::double precision < ALL (p)) AND ((1)::double precision > ALL (p))))
+);
+
+
+--
 -- Name: schema_migrations; Type: TABLE; Schema: public; Owner: -
 --
 
 CREATE TABLE public.schema_migrations (
     version character varying NOT NULL
+);
+
+
+--
+-- Name: segments; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.segments (
+    id bigint NOT NULL,
+    x double precision NOT NULL,
+    y double precision NOT NULL,
+    geom public.geometry(Point,26985) GENERATED ALWAYS AS (public.st_setsrid(public.st_makepoint(x, y), 26985)) STORED
+);
+
+
+--
+-- Name: segments_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.segments ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.segments_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
 );
 
 
@@ -220,11 +292,43 @@ ALTER TABLE ONLY public.ingestion_runs
 
 
 --
+-- Name: model_runs model_runs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.model_runs
+    ADD CONSTRAINT model_runs_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: predictions predictions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.predictions
+    ADD CONSTRAINT predictions_pkey PRIMARY KEY (run_id, segment_id);
+
+
+--
 -- Name: schema_migrations schema_migrations_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.schema_migrations
     ADD CONSTRAINT schema_migrations_pkey PRIMARY KEY (version);
+
+
+--
+-- Name: segments segments_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.segments
+    ADD CONSTRAINT segments_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: segments segments_x_y_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.segments
+    ADD CONSTRAINT segments_x_y_key UNIQUE (x, y);
 
 
 --
@@ -251,6 +355,20 @@ CREATE INDEX ingestion_runs_month_idx ON public.ingestion_runs USING btree (sour
 
 
 --
+-- Name: model_runs_one_active; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX model_runs_one_active ON public.model_runs USING btree (is_active) WHERE is_active;
+
+
+--
+-- Name: segments_geom_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX segments_geom_idx ON public.segments USING gist (geom);
+
+
+--
 -- Name: violation_rejects_month_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -272,6 +390,22 @@ CREATE INDEX violations_issued_idx ON public.violations USING btree (issued_at_u
 
 
 --
+-- Name: predictions predictions_run_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.predictions
+    ADD CONSTRAINT predictions_run_id_fkey FOREIGN KEY (run_id) REFERENCES public.model_runs(id) ON DELETE CASCADE;
+
+
+--
+-- Name: predictions predictions_segment_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.predictions
+    ADD CONSTRAINT predictions_segment_id_fkey FOREIGN KEY (segment_id) REFERENCES public.segments(id);
+
+
+--
 -- PostgreSQL database dump complete
 --
 
@@ -288,4 +422,7 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('003'),
     ('004'),
     ('005'),
-    ('006');
+    ('006'),
+    ('007'),
+    ('008'),
+    ('009');
