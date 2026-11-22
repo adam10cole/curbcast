@@ -81,9 +81,7 @@ def area_shapes(
     shrinkage: float,
 ) -> pd.DataFrame:
     keyed = _area_keys(counts, cell_m)
-    area_slot = keyed.groupby([*AREA_KEYS, "weekday", "hour"], as_index=False).agg(
-        k=("k", "sum")
-    )
+    area_slot = keyed.groupby([*AREA_KEYS, "weekday", "hour"], as_index=False).agg(k=("k", "sum"))
 
     areas = area_slot[AREA_KEYS].drop_duplicates()
     full = areas.merge(city, how="cross")
@@ -118,9 +116,7 @@ def slot_probabilities(
         raise FitError("some segments have no area shape; area keys don't line up")
 
     grid["prior"] = np.minimum(grid["seg_p"] * grid["shape"], params.prior_cap)
-    grid["p"] = (grid["k"] + params.m * grid["prior"]) / (
-        grid["n"] + params.m
-    )
+    grid["p"] = (grid["k"] + params.m * grid["prior"]) / (grid["n"] + params.m)
 
     out_of_range = ~grid["p"].between(0, 1, inclusive="neither")
     if out_of_range.any():

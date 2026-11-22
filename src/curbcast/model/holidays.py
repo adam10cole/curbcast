@@ -1,9 +1,11 @@
 from datetime import date
+
 import holidays as holiday_calendar
 import pandas as pd
 
 
 class HolidayError(Exception): ...
+
 
 def weekday_holidays(start: date, end: date) -> frozenset[date]:
     calendar = holiday_calendar.country_holidays(
@@ -11,12 +13,13 @@ def weekday_holidays(start: date, end: date) -> frozenset[date]:
     )
     return frozenset(day for day in calendar if start <= day <= end and day.weekday() < 5)
 
+
 def estimate_holiday_factor(
-        hits: pd.DataFrame,
-        start: date,
-        end: date,
-        excluded_months: frozenset[str],
-        holiday_dates: frozenset[str],
+    hits: pd.DataFrame,
+    start: date,
+    end: date,
+    excluded_months: frozenset[str],
+    holiday_dates: frozenset[str],
 ) -> float:
     dates = pd.date_range(start, end, freq="D").as_unit("ns")
     dates = dates[~dates.strftime("%Y-%m").isin(sorted(excluded_months))]
@@ -31,7 +34,7 @@ def estimate_holiday_factor(
             "weekday": dates.day_of_week,
             "is_holiday": dates.isin(holiday_index),
         },
-        index=dates
+        index=dates,
     )
 
     on_holidays = frame[frame["is_holiday"]]
@@ -49,5 +52,6 @@ def estimate_holiday_factor(
 
     return factor
 
+
 def holiday_probablity(p: float, factor: float) -> float:
-    return min(p*factor, 0.99)
+    return min(p * factor, 0.99)

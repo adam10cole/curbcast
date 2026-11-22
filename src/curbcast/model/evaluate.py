@@ -167,9 +167,7 @@ def evaluate(
     if total_test_hits == 0:
         raise EvaluationError(f"no test hits between {test_start} and {test_end}")
 
-    null, place, time = _reference_probabilities(
-        scored, train_hits, train_start, train_end, params
-    )
+    null, place, time = _reference_probabilities(scored, train_hits, train_start, train_end, params)
 
     return Evaluation(
         test_start=test_start,
@@ -184,6 +182,7 @@ def evaluate(
         capture=capture(scored, total_test_hits),
         calibration=calibration_bands(scored),
     )
+
 
 def _reference_probabilities(
     scored: pd.DataFrame,
@@ -217,6 +216,7 @@ def _reference_probabilities(
     if place.isna().any() or time.isna().any():
         raise EvaluationError("reference models don't cover every grid slot")
     return null, place, time
+
 
 def _as_ns(values: pd.Series) -> pd.Series:
     return pd.to_datetime(values).dt.as_unit("ns")

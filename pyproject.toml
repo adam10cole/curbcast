@@ -48,4 +48,4 @@ module = ["pyarrow", "pyarrow.*"]
 ignore_missing_imports = true
 
 [project.scripts]
-curbcast = "curbcast.ingest.cli:main"
+curbcast = "curbcast.cli:main"
