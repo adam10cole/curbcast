@@ -124,3 +124,29 @@ def prune_runs(conn: psycopg.Connection[Any], keep: int = 3) -> int:
             (keep,),
         )
         return cur.rowcount
+
+
+def write_warnings(conn: psycopg.Connection[Any], run_id: int, warnings: pd.DataFrame) -> int:
+    if warnings.empty:
+        return 0
+    with conn.transaction(), conn.cursor() as cur:
+        ids = _upsert_segments(cur, warnings[["x", "y"]].drop_duplicates(ignore_index=True))
+        with cur.copy(
+            "COPY restriction_warnings (run_id, segment_id, kind, weekday, hour, "
+            "dates_seen, last_seen, active_months) FROM STDIN"
+        ) as copy:
+            copy.set_types(["int8", "int8", "text", "int2", "int2", "int4", "date", "int2[]"])
+            for row in warnings.to_dict("records"):
+                copy.write_row(
+                    (
+                        run_id,
+                        ids[(float(row["x"]), float(row["y"]))],
+                        row["kind"],
+                        int(row["weekday"]),
+                        int(row["hour"]),
+                        int(row["dates_seen"]),
+                        row["last_seen"],
+                        [int(month) for month in row["active_months"]],
+                    )
+                )
+    return len(warnings)

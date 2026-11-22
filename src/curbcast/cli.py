@@ -28,7 +28,8 @@ from curbcast.model.hits import HitsError, load_hits
 from curbcast.model.holidays import HolidayError, estimate_holiday_factor, weekday_holidays
 from curbcast.model.params import ModelParams
 from curbcast.model.predict import NotEnoughData, PredictError, predict
-from curbcast.model.store import StoreError, activate_run, prune_runs, write_run
+from curbcast.model.restrictions import find_warnings, load_scheduled_events
+from curbcast.model.store import StoreError, activate_run, prune_runs, write_run, write_warnings
 
 log = logging.getLogger("curbcast")
 DEFAULT_TRAIN_START = date(2023, 1, 1)
@@ -345,6 +346,12 @@ def do_fit(
         factor,
     )
 
+    events = load_scheduled_events(
+        clean, start, cutoff, params.excluded_months, params.location_source
+    )
+    written = write_warnings(conn, run_id, find_warnings(events, cutoff))
+    log.info("Stored %d restriction warnings for run %d", written, run_id)
+
     if activate:
         activate_run(conn, run_id)
         log.info("Model run %d now active", run_id)
@@ -387,6 +394,9 @@ def do_predict(
         note = "  (holiday)" if hour.holiday else ""
         print(f"  {hour.start:%a %d %b %H:%M}–{hour.end:%H:%M}  {hour.p:6.1%}{note}")
     print(f"\nChance of a ticket during your stay: {result.combined:.1%}")
+
+    for warning in result.warnings:
+        print(f"Warning!! Between {warning.start:%H:%M} and {warning.end:%H:%M}\n{warning.message}")
 
 
 if __name__ == "__main__":

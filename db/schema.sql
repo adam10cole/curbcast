@@ -184,6 +184,27 @@ CREATE TABLE public.predictions (
 
 
 --
+-- Name: restriction_warnings; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.restriction_warnings (
+    run_id bigint NOT NULL,
+    segment_id bigint NOT NULL,
+    kind text NOT NULL,
+    weekday smallint NOT NULL,
+    hour smallint NOT NULL,
+    dates_seen integer NOT NULL,
+    last_seen date NOT NULL,
+    active_months smallint[] NOT NULL,
+    CONSTRAINT restriction_warnings_active_months_check CHECK (((array_length(active_months, 1) >= 1) AND (array_length(active_months, 1) <= 12))),
+    CONSTRAINT restriction_warnings_dates_seen_check CHECK ((dates_seen > 0)),
+    CONSTRAINT restriction_warnings_hour_check CHECK (((hour >= 0) AND (hour <= 23))),
+    CONSTRAINT restriction_warnings_kind_check CHECK ((kind = ANY (ARRAY['rush_hour_am'::text, 'rush_hour_pm'::text, 'street_cleaning'::text, 'restricted_hours'::text, 'school_zone'::text]))),
+    CONSTRAINT restriction_warnings_weekday_check CHECK (((weekday >= 0) AND (weekday <= 6)))
+);
+
+
+--
 -- Name: schema_migrations; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -308,6 +329,14 @@ ALTER TABLE ONLY public.predictions
 
 
 --
+-- Name: restriction_warnings restriction_warnings_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.restriction_warnings
+    ADD CONSTRAINT restriction_warnings_pkey PRIMARY KEY (run_id, segment_id, kind, weekday, hour);
+
+
+--
 -- Name: schema_migrations schema_migrations_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -406,6 +435,22 @@ ALTER TABLE ONLY public.predictions
 
 
 --
+-- Name: restriction_warnings restriction_warnings_run_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.restriction_warnings
+    ADD CONSTRAINT restriction_warnings_run_id_fkey FOREIGN KEY (run_id) REFERENCES public.model_runs(id) ON DELETE CASCADE;
+
+
+--
+-- Name: restriction_warnings restriction_warnings_segment_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.restriction_warnings
+    ADD CONSTRAINT restriction_warnings_segment_id_fkey FOREIGN KEY (segment_id) REFERENCES public.segments(id);
+
+
+--
 -- PostgreSQL database dump complete
 --
 
@@ -425,4 +470,5 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('006'),
     ('007'),
     ('008'),
-    ('009');
+    ('009'),
+    ('010');

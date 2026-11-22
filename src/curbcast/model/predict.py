@@ -1,5 +1,5 @@
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -8,6 +8,7 @@ import psycopg
 
 from curbcast.ingest.normalize import DC_BOUNDARIES
 from curbcast.model.holidays import holiday_probablity, weekday_holidays
+from curbcast.model.restrictions import WARNING_MESSAGES
 
 DC_TIMEZONE = ZoneInfo("America/New_York")
 MAX_DISTANCE = 100.0  # meters
@@ -35,6 +36,14 @@ class PredictError(Exception): ...
 
 
 @dataclass(frozen=True)
+class RestrictionWarning:
+    kind: str
+    message: str
+    start: datetime  # DC local time
+    end: datetime
+
+
+@dataclass(frozen=True)
 class HourRisk:
     start: datetime  # DC local time
     end: datetime  # DC local time
@@ -56,6 +65,7 @@ class Prediction:
     seg_lon: float
     distance: float  # meters
     hours: tuple[HourRisk, ...]
+    warnings: tuple[RestrictionWarning, ...] = ()
 
     @property
     def combined(self) -> float:
@@ -134,6 +144,12 @@ def predict(
             )
         )
 
+    rows = conn.execute(
+        "SELECT kind, weekday, hour, active_months FROM restriction_warnings "
+        "WHERE run_id = %s AND segment_id = %s",
+        (run_id, seg_id),
+    ).fetchall()
+
     return Prediction(
         run_id=run_id,
         model_cutoff=cutoff,
@@ -142,4 +158,27 @@ def predict(
         seg_lon=float(seg_lon),
         distance=float(distance),
         hours=tuple(hours),
+        warnings=_stay_warnings(hours, rows),
     )
+
+
+def _stay_warnings(
+    hours: list[HourRisk], rows: list[tuple[str, int, int, list[int]]]
+) -> tuple[RestrictionWarning, ...]:
+
+    by_slot: dict[tuple[int, int], list[tuple[str, set[int]]]] = {}
+    for kind, weekday, hour, months in rows:
+        by_slot.setdefault((int(weekday), int(hour)), []).append((kind, set(months)))
+
+    spans: list[RestrictionWarning] = []
+    for piece in hours:
+        for kind, season in by_slot.get((piece.start.weekday(), piece.start.hour), []):
+            if piece.start.month not in season:
+                continue
+            if spans and spans[-1].kind == kind and spans[-1].end == piece.start:
+                spans[-1] = replace(spans[-1], end=piece.end)
+            else:
+                spans.append(
+                    RestrictionWarning(kind, WARNING_MESSAGES[kind], piece.start, piece.end)
+                )
+    return tuple(spans)
