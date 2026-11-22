@@ -5,8 +5,10 @@ import time
 from collections.abc import Generator, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import date, timedelta
 from pathlib import Path
 
+import pandas as pd
 import psycopg
 
 from curbcast.config import Settings
@@ -20,8 +22,25 @@ from curbcast.ingest.extract import (
 )
 from curbcast.ingest.load import LoadError, LoadResult, load_month
 from curbcast.ingest.normalize import NormalizeError, NormalizeResult, normalize_month
+from curbcast.model.evaluate import EvaluationError, evaluate
+from curbcast.model.fit import FitError, fit
+from curbcast.model.hits import HitsError, load_hits
+from curbcast.model.holidays import HolidayError, estimate_holiday_factor, weekday_holidays
+from curbcast.model.params import ModelParams
+from curbcast.model.store import StoreError, activate_run, prune_runs, write_run
 
 log = logging.getLogger("curbcast")
+DEFAULT_TRAIN_START = date(2023, 1, 1)
+HANDLED_ERRORS = (
+    ExtractError,
+    NormalizeError,
+    LoadError,
+    HitsError,
+    FitError,
+    HolidayError,
+    EvaluationError,
+    StoreError,
+)
 
 
 def parse_month(text: str) -> MonthRef:
@@ -30,6 +49,23 @@ def parse_month(text: str) -> MonthRef:
         return MonthRef(int(year), int(month))
     except ValueError as exc:
         raise argparse.ArgumentTypeError(f"Needs YYYY-MM, not {text!r}") from exc
+
+
+def parse_date(text: str) -> date:
+    try:
+        return date.fromisoformat(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"Needs YYYY-MM-DD, not {text!r}") from exc
+
+
+def parse_non_negative(text: str) -> int:
+    try:
+        value = int(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"Needs whole number not {text!r}") from exc
+    if value < 0:
+        raise argparse.ArgumentTypeError("Needs to be 0 or more")
+    return value
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -52,6 +88,34 @@ def build_parser() -> argparse.ArgumentParser:
     backfill.add_argument("--start", type=parse_month, required=True, help="YYYY-MM")
     backfill.add_argument("--end", type=parse_month, required=True, help="YYYY-MM")
     backfill.add_argument("--skip-extract", action="store_true", help="reuse raw files")
+
+    fit_parser = commands.add_parser("fit", help="fit the risk model and store its predictions")
+    fit_parser.add_argument(
+        "--cutoff", type=parse_date, required=True, help="last training date YYYY-MM-DD"
+    )
+    fit_parser.add_argument(
+        "--start",
+        type=parse_date,
+        default=DEFAULT_TRAIN_START,
+        help="first training date YYYY-MM-DD",
+    )
+    fit_parser.add_argument(
+        "--holdout-months",
+        type=parse_non_negative,
+        default=3,
+        help="months before cutoff to score a backtest on (0=skips and default=3)",
+    )
+    fit_parser.add_argument(
+        "--no-activate",
+        action="store_true",
+        help="store the run without making it active",
+    )
+    fit_parser.add_argument(
+        "--keep",
+        type=parse_non_negative,
+        default=3,
+        help="model runs to keep after activating (0 keeps all and default=3)",
+    )
     return parser
 
 
@@ -77,7 +141,18 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "backfill":
             with psycopg.connect(settings.require_database_url(), autocommit=True) as conn:
                 do_backfill(conn, settings, args.start, args.end, skip_extract=args.skip_extract)
-    except (ExtractError, NormalizeError, LoadError) as exc:
+        elif args.command == "fit":
+            with psycopg.connect(settings.require_database_url(), autocommit=True) as conn:
+                do_fit(
+                    conn,
+                    settings,
+                    args.start,
+                    args.cutoff,
+                    args.holdout_months,
+                    activate=not args.no_activate,
+                    keep=args.keep,
+                )
+    except HANDLED_ERRORS as exc:
         log.error("%s", exc)
         return 1
     return 0
@@ -170,6 +245,94 @@ def do_backfill(
             log.info("Skipping %s its not published yet", month)
         if not skip_extract:
             time.sleep(2)  # let's try not to get rate limited
+
+
+def do_fit(
+    conn: psycopg.Connection,
+    settings: Settings,
+    start: date,
+    cutoff: date,
+    holdout_months: int,
+    *,
+    activate: bool,
+    keep: int,
+) -> int:
+    params = ModelParams()
+    clean = settings.data_dir / "clean"
+    categories = settings.data_dir / "reference" / "violation_categories.csv"
+
+    evaluation: dict[str, object] | None = None
+    if holdout_months > 0:
+        eval_start = (
+            pd.Timestamp(cutoff) + pd.Timedelta(days=1) - pd.DateOffset(months=holdout_months)
+        ).date()
+        train_end = eval_start - timedelta(days=1)
+        if train_end < start:
+            raise FitError(f"holdout of {holdout_months} months leave no training data")
+
+        train_hits = load_hits(clean, categories, params, start, train_end)
+        test_hits = load_hits(clean, categories, params, eval_start, cutoff)
+        backtest = fit(train_hits, start, train_end, params)
+        backtest_factor = estimate_holiday_factor(
+            train_hits, start, train_end, params.excluded_months, weekday_holidays(start, train_end)
+        )
+
+        result = evaluate(
+            backtest,
+            backtest_factor,
+            train_hits,
+            start,
+            train_end,
+            test_hits,
+            eval_start,
+            cutoff,
+            weekday_holidays(eval_start, cutoff),
+            params,
+        )
+        log.info(
+            "Backtest %s..%s: %.2f%% better than null, %.2f%% than place only, "
+            "%.2f%% than time only, and top-1%% capture %.1f%%",
+            eval_start,
+            cutoff,
+            result.vs_null * 100,
+            result.vs_place_only * 100,
+            result.vs_time_only * 100,
+            result.capture[0.01] * 100,
+        )
+        evaluation = result.to_json()
+
+    hits = load_hits(clean, categories, params, start, cutoff)
+    predictions = fit(hits, start, cutoff, params)
+    factor = estimate_holiday_factor(
+        hits, start, cutoff, params.excluded_months, weekday_holidays(start, cutoff)
+    )
+    run_id = write_run(
+        conn,
+        params=params,
+        train_start=start,
+        cutoff=cutoff,
+        holiday_factor=factor,
+        predictions=predictions,
+        evaluation=evaluation,
+    )
+    log.info(
+        "Stored model run %d: %s..%s, %d segments, holiday factor %.4f",
+        run_id,
+        start,
+        cutoff,
+        len(predictions) // 168,
+        factor,
+    )
+
+    if activate:
+        activate_run(conn, run_id)
+        log.info("Model run %d now active", run_id)
+        if keep > 0:
+            deleted = prune_runs(conn, keep=keep)
+            if deleted:
+                log.info("Pruned %d old model runs", deleted)
+
+    return run_id
 
 
 def raw_dir(settings: Settings, month: MonthRef) -> Path:

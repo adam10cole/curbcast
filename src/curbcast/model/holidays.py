@@ -19,7 +19,7 @@ def estimate_holiday_factor(
     start: date,
     end: date,
     excluded_months: frozenset[str],
-    holiday_dates: frozenset[str],
+    holiday_dates: frozenset[date],
 ) -> float:
     dates = pd.date_range(start, end, freq="D").as_unit("ns")
     dates = dates[~dates.strftime("%Y-%m").isin(sorted(excluded_months))]
