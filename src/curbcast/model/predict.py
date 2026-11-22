@@ -31,6 +31,77 @@ NEAREST_SEGMENT_SQL = """
     LIMIT 1
 """
 
+MAP_SQL = """
+    SELECT s.id,
+           ST_Y(ST_Transform(s.geom, 4326)) AS lat,
+           ST_X(ST_Transform(s.geom, 4326)) AS lon,
+           pr.p[%(slot)s] AS p,
+           coalesce((
+               SELECT array_agg(w.kind ORDER BY w.kind)
+               FROM restriction_warnings w
+               WHERE w.run_id = pr.run_id AND w.segment_id = pr.segment_id
+                 AND w.weekday = %(weekday)s AND w.hour = %(hour)s
+                 AND %(month)s = ANY (w.active_months)
+           ), '{}') AS kinds
+    FROM predictions pr
+    JOIN segments s ON s.id = pr.segment_id
+    WHERE pr.run_id = %(run_id)s
+"""
+
+
+@dataclass(frozen=True)
+class MapBlock:
+    segment_id: int
+    lat: float
+    lon: float
+    chance: float
+    warnings: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class RiskMap:
+    run_id: int
+    trained_through: date
+    at: datetime
+    holiday: bool
+    blocks: tuple[MapBlock, ...]
+
+
+def risk_map(conn: psycopg.Connection[Any], at: datetime) -> RiskMap:
+    """Every block's chance of a ticket in the hour containing `at`, plus active restrictions."""
+    local = at.replace(tzinfo=DC_TIMEZONE) if at.tzinfo is None else at.astimezone(DC_TIMEZONE)
+
+    run = conn.execute(
+        "SELECT id, cutoff_date, holiday_factor FROM model_runs WHERE is_active"
+    ).fetchone()
+    if run is None:
+        raise PredictError("no active model; run `curbcast fit` first")
+    run_id, cutoff, holiday_factor = int(run[0]), run[1], float(run[2])
+
+    is_holiday = local.date() in weekday_holidays(local.date(), local.date())
+    rows = conn.execute(
+        MAP_SQL,
+        {
+            "run_id": run_id,
+            "slot": local.weekday() * 24 + local.hour + 1,
+            "weekday": local.weekday(),
+            "hour": local.hour,
+            "month": local.month,
+        },
+    ).fetchall()
+
+    blocks = tuple(
+        MapBlock(
+            segment_id=int(segment_id),
+            lat=float(lat),
+            lon=float(lon),
+            chance=holiday_probablity(float(p), holiday_factor) if is_holiday else float(p),
+            warnings=tuple(kinds),
+        )
+        for segment_id, lat, lon, p, kinds in rows
+    )
+    return RiskMap(run_id, cutoff, local, is_holiday, blocks)
+
 
 class PredictError(Exception): ...
 
